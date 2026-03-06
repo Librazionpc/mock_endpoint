@@ -49,11 +49,12 @@ transactions_table = [
 # SECURITY DEPENDENCIES
 # ==============================
 
-def verify_ai_api_key(x_ai_api_key: str = Header(...)):
+def verify_ai_api_key(x_api_key: str = Header(...)):
     """
     Validates that request is coming from trusted AI agent.
+    Header expected: X-API-Key
     """
-    if x_ai_api_key != INTERNAL_AI_API_KEY:
+    if x_api_key != INTERNAL_AI_API_KEY:
         raise HTTPException(status_code=403, detail="Invalid AI API Key")
     return True
 
@@ -61,7 +62,7 @@ def verify_ai_api_key(x_ai_api_key: str = Header(...)):
 def get_authenticated_user(x_user_id: str = Header(...)):
     """
     Simulated user authentication.
-    In production, this would decode JWT.
+    In production this would decode a JWT token.
     """
     if not x_user_id:
         raise HTTPException(status_code=401, detail="User not authenticated")
@@ -69,10 +70,10 @@ def get_authenticated_user(x_user_id: str = Header(...)):
 
 
 # ==============================
-# RESPONSE MODEL
+# RESPONSE MODELS
 # ==============================
 
-class TransactionResponse(BaseModel):
+class TransactionData(BaseModel):
     transaction_id: str
     network: str
     amount: float
@@ -80,40 +81,74 @@ class TransactionResponse(BaseModel):
     created_at: datetime
 
 
+class AITransactionResponse(BaseModel):
+    success: bool
+    transaction_id: str
+    http_status: int
+    data: Optional[TransactionData] = None
+    error: Optional[str] = None
+    timestamp: datetime
+
+
 # ==============================
 # ENDPOINT
 # ==============================
 
-@app.get("/ai/transaction/{transaction_id}", response_model=TransactionResponse)
+@app.get("/ai/transaction/{transaction_id}", response_model=AITransactionResponse)
 def get_transaction_details(
     transaction_id: str,
     api_key_valid: bool = Depends(verify_ai_api_key),
     current_user: str = Depends(get_authenticated_user)
 ):
     """
-    AI Agent Endpoint:
-    - Requires internal AI API key
-    - Requires authenticated user ID
-    - Returns transaction ONLY if it belongs to user
+    AI Agent Endpoint
+    - Requires X-API-Key
+    - Requires X-User-Id
+    - Returns transaction ONLY if it belongs to the user
     """
 
-    # Scoped lookup
-    transaction = next(
-        (
-            txn for txn in transactions_table
-            if txn["transaction_id"] == transaction_id
-            and txn["customer_id"] == current_user
-        ),
-        None
-    )
+    try:
 
-    if not transaction:
-        raise HTTPException(
-            status_code=404,
-            detail="Transaction not found or does not belong to user"
+        transaction = next(
+            (
+                txn for txn in transactions_table
+                if txn["transaction_id"] == transaction_id
+                and txn["customer_id"] == current_user
+            ),
+            None
         )
 
-    return transaction
+        if not transaction:
+            raise HTTPException(
+                status_code=404,
+                detail="Transaction not found or does not belong to user"
+            )
+
+        return AITransactionResponse(
+            success=True,
+            transaction_id=transaction_id,
+            http_status=200,
+            data=TransactionData(**transaction),
+            timestamp=datetime.utcnow()
+        )
+
+    except HTTPException as e:
+        return AITransactionResponse(
+            success=False,
+            transaction_id=transaction_id,
+            http_status=e.status_code,
+            error=e.detail,
+            timestamp=datetime.utcnow()
+        )
+
+    except Exception:
+        return AITransactionResponse(
+            success=False,
+            transaction_id=transaction_id,
+            http_status=500,
+            error="Unexpected server error",
+            timestamp=datetime.utcnow()
+        )
 
 
 # ==============================
@@ -122,4 +157,7 @@ def get_transaction_details(
 
 @app.get("/health")
 def health_check():
-    return {"status": "AI Transaction Service Running"}
+    return {
+        "status": "AI Transaction Service Running",
+        "timestamp": datetime.utcnow()
+    }
